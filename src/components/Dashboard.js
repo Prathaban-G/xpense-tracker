@@ -1,6 +1,6 @@
 // components/Dashboard.js
 import React, { useState, useContext, useEffect } from 'react';
-import { getDocs, query,addDoc, collection, where , doc, getDoc,setDoc,serverTimestamp,} from "firebase/firestore";
+import { getDocs, query,addDoc, collection, where , doc, getDoc,setDoc,serverTimestamp,updateDoc, deleteDoc} from "firebase/firestore";
 import { auth, db } from "./firebase"; // adjust path
 import { signOut } from 'firebase/auth';
 import { UserContext } from '../App';
@@ -16,7 +16,7 @@ import {
   Plus,
   Download,
   Filter,Pencil,
-  ChevronDown,
+  ChevronDown,Trash2,
   Calendar,MoreVertical,
   DollarSign,
   FileText, TrendingUp, ShoppingBag, Coffee, Home, Car, Briefcase, Film
@@ -80,6 +80,9 @@ function Dashboard({ initialLoading }) {
   const [endDate, setEndDate] = useState('');
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [tooltipData, setTooltipData] = useState({ show: false, x: 0, y: 0, value: 0 });
+const [editMode, setEditMode] = useState(false);
+const [currentTransaction, setCurrentTransaction] = useState(null);
+const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const [reportFormat, setReportFormat] = useState('pdf');
   const [dashboardData, setDashboardData] = useState({
@@ -255,7 +258,7 @@ expenseGrowth :expenseGrowth.toFixed(1)
     fetchTransactions();
   },  [initialLoading, user]);
 
-  // Handle add transaction
+  // ✅ Handle Add or Edit Transaction
   const handleAddTransaction = async (e) => {
     e.preventDefault();
 
@@ -265,47 +268,75 @@ expenseGrowth :expenseGrowth.toFixed(1)
       return;
     }
 
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      setError("Please enter a valid amount");
+      return;
+    }
+
+    const newTransaction = {
+      date: new Date().toISOString().split('T')[0],
+      description,
+      amount: transactionType === 'expense' ? -parsedAmount : parsedAmount,
+      category: transactionCategory,
+      type: transactionType,
+      createdAt: new Date().toISOString(),
+    };
+
     try {
-      const parsedAmount = parseFloat(amount);
-      if (isNaN(parsedAmount) || parsedAmount <= 0) {
-        setError("Please enter a valid amount");
-        return;
-      }
+      if (editMode && currentTransaction) {
+        // 🔄 UPDATE EXISTING TRANSACTION
+        const docRef = doc(db, "users", user.uid, "transactions", currentTransaction.id);
+        await updateDoc(docRef, newTransaction);
 
-      const newTransaction = {
-        date: new Date().toISOString().split('T')[0],
-        description,
-        amount: transactionType === 'expense' ? -parsedAmount : parsedAmount,
-        category: transactionCategory,
-        type: transactionType,
-        createdAt: new Date().toISOString(),
-      };
+        const updatedTransactions = dashboardData.recentTransactions.map(t =>
+          t.id === currentTransaction.id ? { ...t, ...newTransaction } : t
+        );
 
-      // Save to Firestore
-      const docRef = await addDoc(collection(db, "users", user.uid, "transactions"), newTransaction);
-      
-      // Add ID to the new transaction
-      newTransaction.id = docRef.id;
+        // Recalculate totals
+        let updatedIncome = 0;
+        let updatedExpenses = 0;
 
-      // Update local state for instant feedback
-      const updatedTransactions = [newTransaction, ...dashboardData.recentTransactions];
+        updatedTransactions.forEach(t => {
+          const amt = Math.abs(t.amount);
+          if (t.type === 'income') updatedIncome += amt;
+          else updatedExpenses += amt;
+        });
 
-      let updatedIncome = dashboardData.totalIncome;
-      let updatedExpenses = dashboardData.totalExpenses;
+        setDashboardData({
+          ...dashboardData,
+          recentTransactions: updatedTransactions.slice(0, 10),
+          totalIncome: updatedIncome,
+          totalExpenses: updatedExpenses,
+          profit: updatedIncome - updatedExpenses,
+        });
 
-      if (transactionType === 'income') {
-        updatedIncome += parsedAmount;
+        setEditMode(false);
+        setCurrentTransaction(null);
       } else {
-        updatedExpenses += parsedAmount;
-      }
+        // ➕ ADD NEW TRANSACTION
+        const docRef = await addDoc(collection(db, "users", user.uid, "transactions"), newTransaction);
+        newTransaction.id = docRef.id;
 
-      setDashboardData({
-        ...dashboardData,
-        recentTransactions: updatedTransactions.slice(0, 10),
-        totalIncome: updatedIncome,
-        totalExpenses: updatedExpenses,
-        profit: updatedIncome - updatedExpenses,
-      });
+        const updatedTransactions = [newTransaction, ...dashboardData.recentTransactions];
+
+        let updatedIncome = dashboardData.totalIncome;
+        let updatedExpenses = dashboardData.totalExpenses;
+
+        if (transactionType === 'income') {
+          updatedIncome += parsedAmount;
+        } else {
+          updatedExpenses += parsedAmount;
+        }
+
+        setDashboardData({
+          ...dashboardData,
+          recentTransactions: updatedTransactions.slice(0, 10),
+          totalIncome: updatedIncome,
+          totalExpenses: updatedExpenses,
+          profit: updatedIncome - updatedExpenses,
+        });
+      }
 
       // Reset form
       setShowAddTransactionModal(false);
@@ -314,8 +345,62 @@ expenseGrowth :expenseGrowth.toFixed(1)
       setTransactionCategory('');
       setError('');
     } catch (error) {
-      console.error("Error adding transaction:", error);
-      setError("Failed to add transaction. Please try again.");
+      console.error("Error adding/editing transaction:", error);
+      setError("Failed to save transaction. Please try again.");
+    }
+  };
+
+  // ✏️ Handle Edit Click
+  const handleEditTransaction = (transaction) => {
+    setEditMode(true);
+    setCurrentTransaction(transaction);
+    setTransactionType(transaction.type);
+    setAmount(Math.abs(transaction.amount));
+    setDescription(transaction.description);
+    setTransactionCategory(transaction.category);
+    setShowAddTransactionModal(true);
+  };
+
+  // 🗑️ Show Delete Confirmation
+  const handleConfirmDelete = (transaction) => {
+    setCurrentTransaction(transaction);
+    setShowDeleteModal(true);
+  };
+
+  // ❌ Handle Delete Action
+  const handleDeleteTransaction = async () => {
+    const user = auth.currentUser;
+    if (!user || !currentTransaction) return;
+
+    try {
+      await deleteDoc(doc(db, "users", user.uid, "transactions", currentTransaction.id));
+
+      const updatedTransactions = dashboardData.recentTransactions.filter(
+        t => t.id !== currentTransaction.id
+      );
+
+      const amount = Math.abs(currentTransaction.amount);
+      let updatedIncome = dashboardData.totalIncome;
+      let updatedExpenses = dashboardData.totalExpenses;
+
+      if (currentTransaction.type === 'income') {
+        updatedIncome -= amount;
+      } else {
+        updatedExpenses -= amount;
+      }
+
+      setDashboardData({
+        ...dashboardData,
+        recentTransactions: updatedTransactions,
+        totalIncome: updatedIncome,
+        totalExpenses: updatedExpenses,
+        profit: updatedIncome - updatedExpenses,
+      });
+
+      setShowDeleteModal(false);
+      setCurrentTransaction(null);
+    } catch (error) {
+      console.error("Error deleting transaction:", error);
     }
   };
 
@@ -1027,170 +1112,184 @@ updateChartData();
         </motion.div>
 
         {/* Recent Transactions */}
-        {/* Recent Transactions */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 }}
-          className="col-span-full lg:col-span-2 bg-gray-800 rounded-2xl p-6 shadow-lg"
-        >
-          <div className="hidden sm:flex justify-between items-center mb-6">
-        <h3 className="text-xl font-semibold">Recent Transactions</h3>
-        <div className="flex space-x-3">
-          <button
-            onClick={() => setShowReportModal(true)}
-            className="flex items-center px-3 py-2 text-sm bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors"
-          >
-            <FileText className="w-4 h-4 mr-2" />
-            Report
-          </button>
-
-          <button
-            onClick={() => setShowAddTransactionModal(true)}
-            className="flex items-center px-3 py-2 text-sm bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Add Transaction
-          </button>
-        </div>
-      </div>
-
-      {/* Mobile layout */}
-      <div className="sm:hidden mb-6">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-semibold">Recent Transactions</h3>
-<button
-  onClick={() => setShowAddTransactionModal(true)}
-  className="fixed bottom-4 right-4 z-50 bg-indigo-600 text-white p-4 rounded-full shadow-lg hover:bg-indigo-700 transition-colors
-             flex md:hidden items-center justify-center"
+{/* Recent Transactions */}
+<motion.div
+  initial={{ opacity: 0, y: 20 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ duration: 0.5, delay: 0.3 }}
+  className="col-span-full lg:col-span-2 bg-gray-800 rounded-2xl p-6 shadow-lg"
 >
-  <Plus className="w-6 h-6" />
-</button>
-          <div className="relative">
-            <button 
-              onClick={() => setShowMobileMenu(!showMobileMenu)}
-              className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700"
-            >
-              <MoreVertical className="w-5 h-5" />
-            </button>
-            
-            {/* Mobile dropdown menu */}
-            {showMobileMenu && (
-              <div className="absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-gray-800 ring-1 ring-black ring-opacity-5 z-10">
-                <div className="py-1">
-                  <button
-                    onClick={() => {
-                      setShowReportModal(true);
-                      setShowMobileMenu(false);
-                    }}
-                    className="flex items-center w-full text-left px-4 py-2 text-sm hover:bg-gray-700"
-                  >
-                    <FileText className="w-4 h-4 mr-2" />
-                    Report
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowAddTransactionModal(true);
-                      setShowMobileMenu(false);
-                    }}
-                    className="flex items-center w-full text-left px-4 py-2 text-sm hover:bg-gray-700"
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Transaction
-                  </button>
-                </div>
-              </div>
-            )}
+  {/* Desktop Header */}
+  <div className="hidden sm:flex justify-between items-center mb-6">
+    <h3 className="text-xl font-semibold">Recent Transactions</h3>
+    <div className="flex space-x-3">
+      <button
+        onClick={() => setShowReportModal(true)}
+        className="flex items-center px-3 py-2 text-sm bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors"
+      >
+        <FileText className="w-4 h-4 mr-2" />
+        Report
+      </button>
+      <button
+        onClick={() => setShowAddTransactionModal(true)}
+        className="flex items-center px-3 py-2 text-sm bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
+      >
+        <Plus className="w-4 h-4 mr-2" />
+        Add Transaction
+      </button>
+    </div>
+  </div>
+
+  {/* Mobile Header */}
+  <div className="sm:hidden mb-6">
+    <div className="flex justify-between items-center">
+      <h3 className="text-lg font-semibold">Recent Transactions</h3>
+      <button
+        onClick={() => setShowAddTransactionModal(true)}
+        className="fixed bottom-4 right-4 z-50 bg-indigo-600 text-white p-4 rounded-full shadow-lg hover:bg-indigo-700 transition-colors flex md:hidden items-center justify-center"
+      >
+        <Plus className="w-6 h-6" />
+      </button>
+      <div className="relative">
+        <button
+          onClick={() => setShowMobileMenu(!showMobileMenu)}
+          className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700"
+        >
+          <MoreVertical className="w-5 h-5" />
+        </button>
+        {showMobileMenu && (
+          <div className="absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-gray-800 ring-1 ring-black ring-opacity-5 z-10">
+            <div className="py-1">
+              <button
+                onClick={() => {
+                  setShowReportModal(true);
+                  setShowMobileMenu(false);
+                }}
+                className="flex items-center w-full text-left px-4 py-2 text-sm hover:bg-gray-700"
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                Report
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddTransactionModal(true);
+                  setShowMobileMenu(false);
+                }}
+                className="flex items-center w-full text-left px-4 py-2 text-sm hover:bg-gray-700"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Transaction
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
+    </div>
+  </div>
 
+  {/* Table - Fully Responsive */}
+  <div className="w-full overflow-x-hidden">
+    <table className="table-fixed w-full text-sm sm:text-base">
+  <thead>
+  <tr className="text-left text-gray-400 text-xs sm:text-sm">
+    <th className="pb-3 pr-2 w-[20%] truncate whitespace-nowrap">Date</th>
+    <th className="pb-3 pr-2 w-[20%] truncate whitespace-nowrap">Description</th>
+    <th className="pb-3 pr-2 w-[20%] truncate whitespace-nowrap">Category</th>
+    <th className="pb-3 pr-2 text-right w-[25%] truncate whitespace-nowrap">Amount</th>
+    <th className="pb-3 text-right w-[15%] truncate whitespace-nowrap">Actions</th>
+  </tr>
+</thead>
 
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-left text-gray-400 text-sm">
-                  <th className="pb-3 font-medium">Date</th>
-                  <th className="pb-3 font-medium">Description</th>
-                  <th className="pb-3 font-medium">Category</th>
-                  <th className="pb-3 font-medium text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-700">
-                {getFilteredTransactions()
-                  .slice(currentPage * itemsPerPage, (currentPage * itemsPerPage) + itemsPerPage)
-                  .map(transaction => (
-                    <tr key={transaction.id} className="text-sm">
-                      <td className="py-3 text-gray-300">{transaction.date}</td>
-                      <td className="py-3">{transaction.description}</td>
-                      <td className="py-3">
-                        <span className={`px-2 py-1 rounded-full text-xs ${transaction.type === 'income' ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
-                          }`}>
-                          {transaction.category}
-                        </span>
-                      </td>
-                      <td className={`py-3 text-right font-medium ${transaction.amount >= 0 ? 'text-green-400' : 'text-red-400'
-                        }`}>
-                        {transaction.amount >= 0 ? '+' : ''}{transaction.amount.toLocaleString('en-IN', {
-                          style: 'currency',
-                          currency: 'INR'
-                        })}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+  <tbody className="divide-y divide-gray-700">
+    {getFilteredTransactions()
+      .slice(currentPage * itemsPerPage, (currentPage * itemsPerPage) + itemsPerPage)
+      .map(transaction => (
+        <tr key={transaction.id} className="text-gray-300 text-xs sm:text-sm">
+          <td className="py-3 truncate whitespace-nowrap overflow-hidden">{transaction.date}</td>
+          <td className="py-3 truncate whitespace-nowrap overflow-hidden">{transaction.description}</td>
+          <td className="py-3 truncate whitespace-nowrap overflow-hidden">
+            <span className={`px-2 py-1 rounded-full text-xs ${transaction.type === 'income' ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}>
+              {transaction.category}
+            </span>
+          </td>
+          <td className={`py-3 text-right font-medium truncate whitespace-nowrap overflow-hidden ${transaction.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {transaction.amount >= 0 ? '+' : ''}{transaction.amount.toLocaleString('en-IN', {
+              style: 'currency',
+              currency: 'INR'
+            })}
+          </td>
+          <td className="py-3 text-right space-x-2 truncate whitespace-nowrap overflow-hidden">
+            <button
+              onClick={() => handleEditTransaction(transaction)}
+              className="text-blue-400 hover:text-blue-600"
+              title="Edit"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleConfirmDelete(transaction)}
+              className="text-red-400 hover:text-red-600"
+              title="Delete"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </td>
+        </tr>
+      ))}
+  </tbody>
+</table>
+  </div>
 
-          {getFilteredTransactions().length === 0 && (
-            <div className="text-center py-8 text-gray-400">
-              <p>No transactions found for this time period</p>
-            </div>
-          )}
+  {/* No Transactions */}
+  {getFilteredTransactions().length === 0 && (
+    <div className="text-center py-8 text-gray-400">
+      <p>No transactions found for this time period</p>
+    </div>
+  )}
 
-          {/* Pagination Controls */}
-          <div className="mt-6 flex flex-col sm:flex-row justify-between items-center text-sm">
-            <div className="flex items-center mb-4 sm:mb-0">
-              <span className="text-gray-400 mr-2">Show:</span>
-              <div className="flex bg-gray-700 rounded-lg">
-                {[5, 10, 20].map(size => (
-                  <button
-                    key={size}
-                    onClick={() => {
-                      setItemsPerPage(size);
-                      setCurrentPage(0);
-                    }}
-                    className={`px-3 py-1 ${itemsPerPage === size ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-lg`}
-                  >
-                    {size}
-                  </button>
-                ))}
-              </div>
-            </div>
+  {/* Pagination */}
+  <div className="mt-6 flex flex-col sm:flex-row justify-between items-center text-sm">
+    <div className="flex items-center mb-4 sm:mb-0">
+      <span className="text-gray-400 mr-2">Show:</span>
+      <div className="flex bg-gray-700 rounded-lg">
+        {[5, 10, 20].map(size => (
+          <button
+            key={size}
+            onClick={() => {
+              setItemsPerPage(size);
+              setCurrentPage(0);
+            }}
+            className={`px-3 py-1 ${itemsPerPage === size ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-lg`}
+          >
+            {size}
+          </button>
+        ))}
+      </div>
+    </div>
 
-            <div className="flex items-center space-x-2">
-              <span className="text-gray-400">
-                Showing {currentPage * itemsPerPage + 1} - {Math.min((currentPage + 1) * itemsPerPage, getFilteredTransactions().length)} of {getFilteredTransactions().length}
-              </span>
-              <div className="flex bg-gray-700 rounded-lg">
-                <button
-                  onClick={() => setCurrentPage(Math.max(0, currentPage - 1))}
-                  disabled={currentPage === 0}
-                  className={`px-3 py-1 ${currentPage === 0 ? 'text-gray-500 cursor-not-allowed' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-l-lg`}
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setCurrentPage(Math.min(Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1, currentPage + 1))}
-                  disabled={currentPage >= Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1}
-                  className={`px-3 py-1 ${currentPage >= Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1 ? 'text-gray-500 cursor-not-allowed' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-r-lg`}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          </div>
-        </motion.div>
+    <div className="flex items-center space-x-2">
+      <span className="text-gray-400">
+        Showing {currentPage * itemsPerPage + 1} - {Math.min((currentPage + 1) * itemsPerPage, getFilteredTransactions().length)} of {getFilteredTransactions().length}
+      </span>
+      <div className="flex bg-gray-700 rounded-lg">
+        <button
+          onClick={() => setCurrentPage(Math.max(0, currentPage - 1))}
+          disabled={currentPage === 0}
+          className={`px-3 py-1 ${currentPage === 0 ? 'text-gray-500 cursor-not-allowed' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-l-lg`}
+        >
+          Previous
+        </button>
+        <button
+          onClick={() => setCurrentPage(Math.min(Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1, currentPage + 1))}
+          disabled={currentPage >= Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1}
+          className={`px-3 py-1 ${currentPage >= Math.ceil(getFilteredTransactions().length / itemsPerPage) - 1 ? 'text-gray-500 cursor-not-allowed' : 'text-gray-300 hover:bg-gray-600'} transition-colors rounded-r-lg`}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  </div>
+</motion.div>
       </div>
       <div className="bg-gray-800 mt-4 rounded-2xl p-6 shadow-xl flex flex-col h-full transition-all duration-300 hover:shadow-2xl transform hover:-translate-y-1">
         {/* Header with shimmer effect */}
@@ -1390,6 +1489,38 @@ updateChartData();
         </div>
       )}
     </AnimatePresence>
+
+    {/* Delete Modal */}
+{showDeleteModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.2 }}
+      className="bg-gray-800 rounded-2xl p-8 shadow-xl max-w-sm w-full"
+    >
+      <h3 className="text-lg font-semibold text-white mb-4">
+        Are you sure you want to delete this transaction?
+      </h3>
+      <div className="flex justify-end space-x-3">
+        <button
+          onClick={() => setShowDeleteModal(false)}
+          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleDeleteTransaction}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium"
+        >
+          Delete
+        </button>
+      </div>
+    </motion.div>
+  </div>
+)}
+
 
     {/* Generate Report Modal */}
     <AnimatePresence>
