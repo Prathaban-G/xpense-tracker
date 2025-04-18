@@ -1,6 +1,6 @@
 // components/Dashboard.js
 import React, { useState, useContext, useEffect } from 'react';
-import { getDocs, query,addDoc, collection, where } from "firebase/firestore";
+import { getDocs, query,addDoc, collection, where , doc, getDoc,setDoc,serverTimestamp,} from "firebase/firestore";
 import { auth, db } from "./firebase"; // adjust path
 import { signOut } from 'firebase/auth';
 import { UserContext } from '../App';
@@ -15,7 +15,7 @@ import {
   ArrowDown,
   Plus,
   Download,
-  Filter,
+  Filter,Pencil,
   ChevronDown,
   Calendar,MoreVertical,
   DollarSign,
@@ -97,6 +97,34 @@ function Dashboard({ initialLoading }) {
 
   const expenseCategories = ['Rent', 'Groceries', 'Utilities', 'Entertainment', 'Transportation', 'Dining', 'Shopping', 'Healthcare', 'Education', 'Other'];
   const incomeCategories = ['Salary', 'Freelance', 'Investments', 'Gifts', 'Refunds', 'Other'];
+
+const [userBudget, setUserBudget] = useState(50000);
+const [newBudget, setNewBudget] = useState('');
+const [openBudgetModal, setOpenBudgetModal] = useState(false);
+
+useEffect(() => {
+  const fetchBudget = async () => {
+
+const user = auth.currentUser; // Or however you're getting the user
+    const docRef = doc(db, "users", user.uid, "budget", "monthly");
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      setUserBudget(docSnap.data().amount);
+    }
+  };
+  fetchBudget();
+}, [user]);
+
+const handleSaveBudget = async () => {
+  if (!newBudget) return;
+  await setDoc(doc(db, "users", user.uid, "budget", "monthly"), {
+    amount: Number(newBudget),
+    updatedAt: serverTimestamp(),
+  });
+  setUserBudget(Number(newBudget));
+  setOpenBudgetModal(false);
+  setNewBudget('');
+};
 
   // Fetch transactions
 
@@ -662,7 +690,10 @@ updateChartData();
   );
 
  
-
+  const spendingPercent = Math.min(
+    Math.round((dashboardData.totalExpenses / userBudget) * 100),
+    100
+  );
   return (
    
     <div className="min-h-screen bg-gray-900 text-white">
@@ -890,57 +921,70 @@ updateChartData();
           </motion.div>
 
           {/* Budget Goal Progress */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
-            className="col-span-full lg:col-span-1 shadow-lg"
-          >
-            <div className="bg-gradient-to-br from-purple-500/20 to-purple-600/20 border border-purple-500/30 rounded-2xl p-6 shadow-lg backdrop-blur-sm">
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <p className="text-purple-300 text-sm">Monthly Budget</p>
-                  <h3 className="text-2xl font-bold mt-1">{formatCurrency(50000)}</h3>
-                </div>
-                <div className="p-3 bg-purple-500/30 rounded-xl">
-                  <TrendingUp className="w-6 h-6 text-purple-300" />
-                </div>
-              </div>
-              
-              {/* Budget progress bar */}
-              <div className="mt-4">
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-purple-300">Current spending</span>
-                  <span className="text-white font-medium">
-                    {Math.min(Math.round((dashboardData.totalExpenses / 50000) * 100), 100)}%
-                  </span>
-                </div>
-                <div className="h-2 w-full bg-gray-700 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full ${dashboardData.totalExpenses > 50000 ? 'bg-red-500' : 'bg-purple-500'} rounded-full`}
-                    style={{ width: `${Math.min((dashboardData.totalExpenses / 50000) * 100, 100)}%` }}
-                  ></div>
-                </div>
-                <p className="text-xs text-gray-400 mt-2">
-                  {dashboardData.totalExpenses > 50000 
-                    ? `You've exceeded your budget by ${formatCurrency(dashboardData.totalExpenses - 50000)}`
-                    : `${formatCurrency(50000 - dashboardData.totalExpenses)} remaining`
-                  }
-                </p>
-              </div>
-              
-              {/* Days left in month */}
-              <div className="mt-6 p-3 bg-purple-500/10 rounded-lg border border-purple-500/20">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-purple-300">Days left in month</span>
-                  <span className="text-lg font-bold text-white">
-                    {new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate() - new Date().getDate()}
-                  </span>
-                </div>
-              </div>
+         <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.1 }}
+        className="col-span-full lg:col-span-1 shadow-lg"
+      >
+        <div className="bg-gradient-to-br from-purple-500/20 to-purple-600/20 border border-purple-500/30 rounded-2xl p-6 shadow-lg backdrop-blur-sm">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <p className="text-purple-300 text-sm">Monthly Budget</p>
+              <h3 className="text-2xl font-bold mt-1">{formatCurrency(userBudget)}</h3>
             </div>
-          </motion.div>
-          
+            <div className="flex items-center space-x-2">
+              <div className="p-3 bg-purple-500/30 rounded-xl">
+                <TrendingUp className="w-6 h-6 text-purple-300" />
+              </div>
+              <button onClick={() => setOpenBudgetModal(true)} className="text-purple-300 hover:text-white">
+                <Pencil className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Budget progress bar */}
+          <div className="mt-4">
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-purple-300">Current spending</span>
+              <span className="text-white font-medium">{spendingPercent}%</span>
+            </div>
+            <div className="h-2 w-full bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full ${
+                  dashboardData.totalExpenses > userBudget
+                    ? "bg-red-500"
+                    : "bg-purple-500"
+                } rounded-full`}
+                style={{ width: `${spendingPercent}%` }}
+              ></div>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">
+              {dashboardData.totalExpenses > userBudget
+                ? `You've exceeded your budget by ${formatCurrency(
+                    dashboardData.totalExpenses - userBudget
+                  )}`
+                : `${formatCurrency(
+                    userBudget - dashboardData.totalExpenses
+                  )} remaining`}
+            </p>
+          </div>
+
+          {/* Days left in month */}
+          <div className="mt-6 p-3 bg-purple-500/10 rounded-lg border border-purple-500/20">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-purple-300">Days left in month</span>
+              <span className="text-lg font-bold text-white">
+                {new Date(
+                  new Date().getFullYear(),
+                  new Date().getMonth() + 1,
+                  0
+                ).getDate() - new Date().getDate()}
+              </span>
+            </div>
+          </div>
+        </div>
+      </motion.div>
           {/* Income vs Expense (Bar Chart) */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1000,6 +1044,7 @@ updateChartData();
             <FileText className="w-4 h-4 mr-2" />
             Report
           </button>
+
           <button
             onClick={() => setShowAddTransactionModal(true)}
             className="flex items-center px-3 py-2 text-sm bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
@@ -1014,6 +1059,13 @@ updateChartData();
       <div className="sm:hidden mb-6">
         <div className="flex justify-between items-center">
           <h3 className="text-lg font-semibold">Recent Transactions</h3>
+<button
+  onClick={() => setShowAddTransactionModal(true)}
+  className="fixed bottom-4 right-4 z-50 bg-indigo-600 text-white p-4 rounded-full shadow-lg hover:bg-indigo-700 transition-colors
+             flex md:hidden items-center justify-center"
+>
+  <Plus className="w-6 h-6" />
+</button>
           <div className="relative">
             <button 
               onClick={() => setShowMobileMenu(!showMobileMenu)}
@@ -1157,7 +1209,7 @@ updateChartData();
                   <span className="text-sm font-medium text-gray-300">{category.name}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-white">${category.amount.toLocaleString()}</span>
+                  <span className="text-sm font-semibold text-white">₹{category.amount.toLocaleString()}</span>
                   <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full">
                     {category.percentage}%
                   </span>
@@ -1185,6 +1237,43 @@ updateChartData();
     {/* Footer */}
 
     <Footer />
+{/* Budget Modal */}
+<AnimatePresence>
+  {openBudgetModal && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        transition={{ duration: 0.2 }}
+        className="bg-gray-800 rounded-2xl p-8 shadow-xl max-w-sm w-full"
+      >
+        <h2 className="text-lg font-semibold text-purple-400 mb-4">Set Monthly Budget</h2>
+        <input
+          type="number"
+          className="w-full px-4 py-2 rounded-lg border border-gray-600 bg-gray-700 text-white focus:ring-indigo-500 focus:border-indigo-500"
+          placeholder="Enter budget amount"
+          value={newBudget}
+          onChange={(e) => setNewBudget(e.target.value)}
+        />
+        <div className="mt-4 flex justify-end space-x-2">
+          <button
+            onClick={() => setOpenBudgetModal(false)}
+            className="px-4 py-2 rounded-lg text-sm bg-gray-700 hover:bg-gray-600 text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSaveBudget}
+            className="px-4 py-2 rounded-lg text-sm bg-purple-600 hover:bg-purple-700 text-white transition-colors"
+          >
+            Save
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
     {/* Add Transaction Modal */}
     <AnimatePresence>
       {showAddTransactionModal && (
