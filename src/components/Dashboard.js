@@ -404,83 +404,96 @@ expenseGrowth :expenseGrowth.toFixed(1)
     }
   };
 
-  // Handle generate report
-  const handleGenerateReport = async (e) => {
-    e.preventDefault();
-  
-    try {
-      if (new Date(startDate) > new Date(endDate)) {
-        setError("Start date cannot be after end date");
-        return;
-      }
-  
-      const user = auth.currentUser;
-      if (!user) {
-        setError("User not authenticated");
-        return;
-      }
-  
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      end.setDate(end.getDate() + 1); // Include end day
-  
-      const transactionsRef = collection(db, "users", user.uid, "transactions");
-      const q = query(transactionsRef, where("date", ">=", startDate), where("date", "<=", endDate));
-      const snapshot = await getDocs(q);
-  
-      const transactions = snapshot.docs.map(doc => doc.data());
-  
-      if (reportFormat === "pdf") {
-        const doc = new jsPDF();
-        doc.text("Transaction Report", 14, 16);
-        doc.setFontSize(10);
-        doc.text(`Date Range: ${startDate} to ${endDate}`, 14, 24);
-  
-        const tableData = transactions.map(tx => [
-          tx.date,
-          tx.description,
-          tx.category,
-          tx.type,
-          `₹${tx.amount.toLocaleString()}`
-        ]);
-  
-        doc.autoTable({
-          head: [["Date", "Description", "Category", "Type", "Amount"]],
-          body: tableData,
-          startY: 30
-        });
-  
-        doc.save(`Transaction_Report_${startDate}_to_${endDate}.pdf`);
-      } else if (reportFormat === "csv") {
-        const header = ["Date", "Description", "Category", "Type", "Amount"];
-        const rows = transactions.map(tx =>
-          [tx.date, tx.description, tx.category, tx.type, tx.amount]
-        );
-  
-        let csvContent = "data:text/csv;charset=utf-8," +
-          [header, ...rows].map(e => e.join(",")).join("\n");
-  
-        const encodedUri = encodeURI(csvContent);
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `Transaction_Report_${startDate}_to_${endDate}.csv`);
-        document.body.appendChild(link);
-        link.click();
-      }
-  
-      // Reset form
-      setShowReportModal(false);
-      setStartDate('');
-      setEndDate('');
-      setError('');
-  
-      alert(`Your ${reportFormat.toUpperCase()} report is ready for download.`);
-  
-    } catch (error) {
-      console.error("Error generating report:", error);
-      setError("Failed to generate report. Please try again.");
+const handleGenerateReport = async (e) => {
+  e.preventDefault();
+
+  try {
+    if (new Date(startDate) > new Date(endDate)) {
+      setError("Start date cannot be after end date");
+      return;
     }
-  };
+
+    const user = auth.currentUser;
+    if (!user) {
+      setError("User not authenticated");
+      return;
+    }
+
+    const username = user.displayName || user.email || "Unknown User";
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setDate(end.getDate() + 1); // Include end day
+
+    const transactionsRef = collection(db, "users", user.uid, "transactions");
+    const q = query(transactionsRef, where("date", ">=", startDate), where("date", "<=", endDate));
+    const snapshot = await getDocs(q);
+
+    // Filter out unwanted transactions like 'superset1' or 'Ref.. remove alert'
+    let transactions = snapshot.docs
+      .map(doc => doc.data())
+      .filter(tx =>
+        !tx.description.toLowerCase().includes("superset1") &&
+        !tx.description.toLowerCase().includes("alert")
+      );
+
+    // Calculate total
+    let total = transactions.reduce((acc, tx) => acc + Number(tx.amount), 0);
+
+    if (reportFormat === "pdf") {
+      const doc = new jsPDF();
+      doc.text("Transaction Report", 14, 16);
+      doc.setFontSize(10);
+      doc.text(`Username: ${username}`, 14, 22);
+      doc.text(`Date Range: ${startDate} to ${endDate}`, 14, 28);
+
+      const tableData = transactions.map(tx => [
+        tx.date,
+        tx.description,
+        tx.category,
+        tx.type,
+        `₹${Number(tx.amount).toLocaleString()}`
+      ]);
+
+      doc.autoTable({
+        head: [["Date", "Description", "Category", "Type", "Amount"]],
+        body: tableData,
+        startY: 35,
+      });
+
+      doc.setFontSize(12);
+      doc.text(`Total: ₹${total.toLocaleString()}`, 14, doc.autoTable.previous.finalY + 10);
+
+      doc.save(`Transaction_Report_${startDate}_to_${endDate}.pdf`);
+    } else if (reportFormat === "csv") {
+      const header = ["Date", "Description", "Category", "Type", "Amount"];
+      const rows = transactions.map(tx =>
+        [tx.date, tx.description, tx.category, tx.type, tx.amount]
+      );
+      rows.push(["", "", "", "Total", total]);
+
+      let csvContent = "data:text/csv;charset=utf-8," +
+        [["Username", username], ["Date Range", `${startDate} to ${endDate}`], [], header, ...rows]
+          .map(e => e.join(",")).join("\n");
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `Transaction_Report_${startDate}_to_${endDate}.csv`);
+      document.body.appendChild(link);
+      link.click();
+    }
+
+    // Reset form
+    setShowReportModal(false);
+    setStartDate('');
+    setEndDate('');
+    setError('');
+    
+  } catch (error) {
+    console.error("Error generating report:", error);
+    setError("Failed to generate report. Please try again.");
+  }
+};
 
   // Prepare expense breakdown data
   const expenseData = dashboardData?.expensesByCategory || {};
