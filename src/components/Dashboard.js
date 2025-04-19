@@ -451,7 +451,7 @@ const handleGenerateReport = async (e) => {
         tx.description,
         tx.category,
         tx.type,
-        `₹${Number(tx.amount).toLocaleString()}`
+        `${Number(tx.amount).toLocaleString()}`
       ]);
 
       doc.autoTable({
@@ -461,7 +461,7 @@ const handleGenerateReport = async (e) => {
       });
 
       doc.setFontSize(12);
-      doc.text(`Total: ₹${total.toLocaleString()}`, 14, doc.autoTable.previous.finalY + 10);
+      doc.text(`Total: ${total.toLocaleString()}`, 14, doc.autoTable.previous.finalY + 10);
 
       doc.save(`Transaction_Report_${startDate}_to_${endDate}.pdf`);
     } else if (reportFormat === "csv") {
